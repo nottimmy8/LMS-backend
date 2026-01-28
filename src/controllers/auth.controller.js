@@ -5,17 +5,17 @@ import {
 } from "../utils/generateToken.js";
 import generateOtp from "../utils/generateOtp.js";
 import crypto from "crypto";
+import deliverOtp from "../utils/deliverOtp.js";
 
 /* =========================
    REGISTER (NO JWT HERE)
 ========================= */
 export const register = async (req, res) => {
   try {
+    // Role is removed from destructuring to prevent user assignment
     const { name, email, password, role } = req.body;
 
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "All fields are required" });
-    }
+    // Validation is now handled by middleware
 
     const userExists = await User.findOne({ email });
     if (userExists) {
@@ -28,14 +28,20 @@ export const register = async (req, res) => {
       name,
       email,
       password,
-      role,
+      role: role || "student", // Use validated role or default
+
       otp: hashedOtp,
       otpExpiresAt: expiresAt,
       isVerified: false,
     });
 
-    // OTP should be sent via email here (nodemailer)
-    console.log("OTP (dev only):", otp);
+    await deliverOtp({
+      email,
+      otp,
+      purpose: "Email Verification",
+    });
+
+    // console.log("OTP (dev only):", otp); // LOGGED FOR TESTING
 
     res.status(201).json({
       message: "Registration successful. Please verify your email with OTP.",
@@ -101,6 +107,51 @@ export const verifyOtp = async (req, res) => {
 };
 
 /* =========================
+   VERIFY RESET OTP (FORGOT PASSWORD FLOW)
+========================= */
+export const verifyResetOtp = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp)
+      return res.status(400).json({ message: "Email and OTP required" });
+
+    const user = await User.findOne({ email }).select(
+      "+resetOtp +resetOtpAttempts",
+    );
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    // Check OTP expiry
+    if (!user.resetOtp || user.resetOtpExpiresAt < Date.now()) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
+
+    const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
+
+    if (hashedOtp !== user.resetOtp) {
+      user.resetOtpAttempts += 1;
+
+      // Lock user if too many failed attempts
+      if (user.resetOtpAttempts >= 5) {
+        await user.save();
+        return res
+          .status(429)
+          .json({ message: "Too many failed OTP attempts. Try again later." });
+      }
+
+      await user.save();
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    // OTP is correct. We DO NOT clear it here, because it is needed for the actual resetPassword step.
+    res.status(200).json({ message: "OTP verified successfully" });
+  } catch (error) {
+    console.error("VERIFY RESET OTP ERROR:", error);
+    res.status(500).json({ message: "OTP verification failed" });
+  }
+};
+
+/* =========================
    RESEND OTP
 ========================= */
 export const resendOtp = async (req, res) => {
@@ -129,14 +180,13 @@ export const resendOtp = async (req, res) => {
     await user.save();
 
     // Send email
-    await sendEmail({
-      to: user.email,
-      subject: "Your OTP Code",
-      html: `<h2>Your OTP is: ${otp}</h2><p>Expires in 10 minutes</p>`,
+    await deliverOtp({
+      email,
+      otp,
+      purpose: "Resent Verification OTP",
     });
-
     // generate otp on console
-    console.log("OTP for testing:", otp);
+    // console.log("OTP for testing:", otp); // LOGGED FOR TESTING
 
     res.status(200).json({ message: "OTP resent successfully" });
   } catch (error) {
@@ -149,36 +199,43 @@ export const resendOtp = async (req, res) => {
    LOGIN (VERIFIED USERS ONLY)
 ========================= */
 export const login = async (req, res) => {
-  const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
 
-  const user = await User.findOne({ email }).select("+password");
-  if (!user || !(await user.matchPassword(password)))
-    return res.status(401).json({ message: "Invalid credentials" });
+    const user = await User.findOne({ email }).select("+password");
+    if (!user || !(await user.matchPassword(password)))
+      return res.status(401).json({ message: "Invalid credentials" });
 
-  if (!user.isVerified)
-    return res.status(403).json({ message: "Verify your email first" });
+    if (!user.isVerified)
+      return res.status(403).json({ message: "Verify your email first" });
 
-  const accessToken = generateAccessToken(user._id);
-  const refreshToken = generateRefreshToken(user._id);
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
 
-  user.refreshToken = refreshToken;
-  await user.save();
+    user.refreshToken = refreshToken;
+    await user.save();
 
-  res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      // secure: false,
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
 
-  res.status(200).json({
-    accessToken,
-    user: {
-      id: user._id,
-      name: user.name,
-      role: user.role,
-    },
-  });
+    res.status(200).json({
+      accessToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.error("LOGIN ERROR:", error);
+    res.status(500).json({ message: "Login failed" });
+  }
 };
 
 /* =========================
@@ -206,17 +263,13 @@ export const forgotPassword = async (req, res) => {
     user.resetOtpAttempts = 0;
     await user.save();
 
-    await sendEmail({
-      to: user.email,
-      subject: "Reset Your Password",
-      html: `
-        <h2>Password Reset OTP</h2>
-        <p>Your OTP is <b>${otp}</b></p>
-        <p>This code expires in 10 minutes.</p>
-      `,
+    await deliverOtp({
+      email: user.email,
+      otp,
+      purpose: "Password Reset",
     });
     // generate otp on console
-    console.log("OTP for testing:", otp);
+    // console.log("OTP for testing:", otp); // REMOVED FOR SECURITY
 
     res.status(200).json({
       message: "If the email exists, an OTP has been sent",
@@ -282,21 +335,37 @@ export const resetPassword = async (req, res) => {
  REFRESH ACCESS TOKEN
 ========================= */
 export const refreshAccessToken = async (req, res) => {
-  const token = req.cookies.refreshToken;
-  if (!token) return res.sendStatus(401);
-
   try {
-    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+    const oldToken = req.cookies.refreshToken;
+    if (!oldToken) return res.sendStatus(401);
+
+    const decoded = jwt.verify(oldToken, process.env.JWT_REFRESH_SECRET);
     const user = await User.findById(decoded.id).select("+refreshToken");
 
-    if (!user || user.refreshToken !== token) {
+    if (!user || user.refreshToken !== oldToken) {
       return res.sendStatus(403);
     }
 
+    // Generate new tokens
     const newAccessToken = generateAccessToken(user._id);
+    const newRefreshToken = generateRefreshToken(user._id);
 
-    res.json({ accessToken: newAccessToken });
-  } catch {
+    // Rotate refresh token in DB
+    user.refreshToken = newRefreshToken;
+    await user.save();
+
+    // Update cookie
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.status(200).json({ accessToken: newAccessToken });
+  } catch (err) {
+    console.error("REFRESH ERROR:", err);
     res.sendStatus(403);
   }
 };
@@ -306,22 +375,53 @@ LOGOUT
 ========================= */
 export const logout = async (req, res) => {
   try {
-    // Clear refresh token from DB and cookie
-    const user = await User.findById(req.user._id);
-    if (user) {
-      user.refreshToken = undefined;
-      await user.save();
+    const refreshToken = req.cookies.refreshToken;
+
+    if (refreshToken) {
+      const user = await User.findOne({ refreshToken });
+      if (user) {
+        user.refreshToken = null;
+        await user.save();
+      }
     }
 
     res.clearCookie("refreshToken", {
       httpOnly: true,
-      sameSite: "strict",
       secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
+      path: "/",
     });
 
-    res.status(200).json({ message: "Logged out successfully" });
+    return res.sendStatus(204);
   } catch (error) {
     console.error("LOGOUT ERROR:", error);
-    res.status(500).json({ message: "Logout failed" });
+    return res.status(500).json({ message: "Logout failed" });
+  }
+};
+
+//
+export const me = async (req, res) => {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+    if (!refreshToken) return res.sendStatus(401);
+
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) return res.sendStatus(403);
+
+    const accessToken = generateAccessToken(user._id);
+
+    res.status(200).json({
+      accessToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        role: user.role,
+      },
+    });
+  } catch (err) {
+    console.error("ME ENDPOINT ERROR:", err);
+    res.sendStatus(403);
   }
 };
