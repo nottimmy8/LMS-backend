@@ -248,11 +248,16 @@ export const forgotPassword = async (req, res) => {
       return res.status(400).json({ message: "Email is required" });
     }
 
+    console.log("Forgot Password Request for email:", email);
     const user = await User.findOne({ email });
+    console.log("User found:", user ? "YES" : "NO");
     if (!user) {
       // Security best practice: do not reveal user existence
-      return res.status(200).json({
-        message: "If the email exists, an OTP has been sent",
+      // return res.status(200).json({
+      //   message: "If the email exists, an OTP has been sent",
+      // });
+      return res.status(404).json({
+        message: "user not assign to this mail",
       });
     }
 
@@ -272,7 +277,7 @@ export const forgotPassword = async (req, res) => {
     // console.log("OTP for testing:", otp); // REMOVED FOR SECURITY
 
     res.status(200).json({
-      message: "If the email exists, an OTP has been sent",
+      message: "An OTP has been sent to your email",
     });
   } catch (error) {
     console.error("FORGOT PASSWORD ERROR:", error);
