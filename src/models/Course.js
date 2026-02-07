@@ -17,8 +17,17 @@ const courseSchema = new mongoose.Schema(
     },
     level: {
       type: String,
-      enum: ["Beginner", "Intermediate", "Advanced", "All Levels"],
-      default: "Beginner",
+      enum: [
+        "beginner",
+        "intermediate",
+        "advanced",
+        "all-levels",
+        "Beginner",
+        "Intermediate",
+        "Advanced",
+        "All Levels",
+      ],
+      default: "beginner",
     },
     price: {
       type: Number,
@@ -26,8 +35,17 @@ const courseSchema = new mongoose.Schema(
     },
     language: {
       type: String,
-      enum: ["English", "French", "Spanish"],
-      default: "English",
+      enum: [
+        "english",
+        "french",
+        "spanish",
+        "german",
+        "English",
+        "French",
+        "Spanish",
+        "German",
+      ],
+      default: "english",
     },
     thumbnail: {
       type: String, // URL to the image
@@ -53,6 +71,9 @@ const courseSchema = new mongoose.Schema(
       type: String,
       enum: ["draft", "published"],
       default: "draft",
+    },
+    publishedAt: {
+      type: Date,
     },
     students: [
       {

@@ -1,7 +1,9 @@
 import Course from "../models/Course.js";
+import { deleteFile, cleanupCourseFiles } from "../utils/fileCleanup.js";
+import { uploadImage, uploadVideo } from "../utils/cloudinaryUpload.js";
 
 /* =========================
-   Tutor: Create Course
+   Tutor: Create Course (Draft or Publish)
 ========================= */
 export const createCourse = async (req, res) => {
   try {
@@ -11,6 +13,15 @@ export const createCourse = async (req, res) => {
     if (typeof req.body.courseData === "string") {
       courseData = JSON.parse(req.body.courseData);
     }
+
+    console.log("Create Course Request:");
+    console.log("Endpoint:", req.path);
+    console.log("Raw Body Keys:", Object.keys(req.body));
+    console.log(
+      "Files:",
+      req.files ? req.files.map((f) => f.fieldname) : "None",
+    );
+    console.log("Parsed Course Data:", JSON.stringify(courseData, null, 2));
 
     const {
       title,
@@ -31,26 +42,45 @@ export const createCourse = async (req, res) => {
 
     let { thumbnail } = courseData;
 
-    // Map uploaded files
+    // Map uploaded files (safely)
     if (req.files && req.files.length > 0) {
-      req.files.forEach((file) => {
-        if (file.fieldname === "thumbnail") {
-          thumbnail = `/uploads/${file.filename}`;
-        } else if (file.fieldname.startsWith("video-")) {
-          const lessonId = file.fieldname.replace("video-", "");
-          // Find the lesson in chapters and update videoUrl
-          chapters.forEach((chapter) => {
-            chapter.lessons.forEach((lesson) => {
-              if (
-                lesson.id === lessonId ||
-                lesson._id?.toString() === lessonId
-              ) {
-                lesson.videoUrl = `/uploads/${file.filename}`;
+      try {
+        for (const file of req.files) {
+          if (file.fieldname === "thumbnail") {
+            try {
+              thumbnail = await uploadImage(file.buffer);
+            } catch (err) {
+              console.error("Thumbnail upload failed:", err.message);
+            }
+          } else if (file.fieldname.startsWith("video-")) {
+            const lessonId = file.fieldname.replace("video-", "");
+            try {
+              const videoUrl = await uploadVideo(file.buffer);
+              if (chapters) {
+                chapters.forEach((chapter) => {
+                  if (chapter.lessons) {
+                    chapter.lessons.forEach((lesson) => {
+                      if (
+                        lesson.id === lessonId ||
+                        lesson._id?.toString() === lessonId
+                      ) {
+                        lesson.videoUrl = videoUrl;
+                      }
+                    });
+                  }
+                });
               }
-            });
-          });
+            } catch (err) {
+              console.error(
+                `Video upload failed for lesson ${lessonId}:`,
+                err.message,
+              );
+            }
+          }
         }
-      });
+      } catch (err) {
+        console.error("File processing error in creation:", err);
+      }
     }
 
     // Conditional Validation
@@ -66,8 +96,21 @@ export const createCourse = async (req, res) => {
           message: "At least one chapter is required to publish.",
         });
       }
+      // Check that each chapter has at least one lesson
+      for (const chapter of chapters) {
+        if (!chapter.title) {
+          return res.status(400).json({
+            message: "All chapters must have a title to publish.",
+          });
+        }
+        if (!chapter.lessons || chapter.lessons.length === 0) {
+          return res.status(400).json({
+            message: `Chapter "${chapter.title || "Untitled"}" must have at least one lesson to publish.`,
+          });
+        }
+      }
     } else {
-      // Draft requirements
+      // Draft requirements - minimal validation
       if (!title) {
         return res.status(400).json({
           message: "Title is required to save a draft.",
@@ -75,24 +118,42 @@ export const createCourse = async (req, res) => {
       }
     }
 
+    console.log(
+      "User in Request:",
+      req.user ? req.user._id : "Missing req.user",
+    );
+
+    // Sanitize enum fields to avoid empty string validation errors
+    const sanitizedLevel = level && level.trim() !== "" ? level : undefined;
+    const sanitizedLanguage =
+      language && language.trim() !== "" ? language : undefined;
+
     const course = await Course.create({
       title,
       subtitle,
       description,
       category,
-      level,
-      price: Number(price),
-      language,
+      level: sanitizedLevel,
+      price: Number(price) || 0,
+      language: sanitizedLanguage,
       thumbnail,
-      chapters,
+      chapters: chapters || [],
       status: status || "draft",
+      publishedAt: status === "published" ? new Date() : undefined,
       tutor: req.user._id,
     });
 
-    res.status(201).json({ message: "Course created", course });
+    res.status(201).json({
+      message:
+        status === "published"
+          ? "Course published successfully"
+          : "Draft saved successfully",
+      course,
+    });
   } catch (error) {
     console.error("CREATE COURSE ERROR:", error);
     if (error.name === "ValidationError") {
+      console.log("Validation Errors:", JSON.stringify(error.errors, null, 2));
       return res.status(400).json({
         message: "Validation failed",
         errors: Object.values(error.errors).map((err) => err.message),
@@ -118,7 +179,7 @@ export const getTutorCourses = async (req, res) => {
       query.status = status;
     }
 
-    const courses = await Course.find(query);
+    const courses = await Course.find(query).sort({ updatedAt: -1 });
     res.status(200).json({ courses });
   } catch (error) {
     console.error("GET TUTOR COURSES ERROR:", error);
@@ -151,76 +212,257 @@ export const updateCourse = async (req, res) => {
       updateData = JSON.parse(req.body.courseData);
     }
 
-    // Detect status from endpoint
-    if (req.path.includes("save-draft")) updateData.status = "draft";
-    if (req.path.includes("publish")) updateData.status = "published";
+    // Detect target status from endpoint
+    const isPublishing = req.path.includes("publish");
+    const isSavingDraft = req.path.includes("save-draft");
 
-    // Handle uploaded files similarly to create
-    if (req.files && req.files.length > 0) {
-      req.files.forEach((file) => {
-        if (file.fieldname === "thumbnail") {
-          updateData.thumbnail = `/uploads/${file.filename}`;
-        } else if (file.fieldname.startsWith("video-")) {
-          const lessonId = file.fieldname.replace("video-", "");
-          if (updateData.chapters) {
-            updateData.chapters.forEach((chapter) => {
-              chapter.lessons.forEach((lesson) => {
-                if (
-                  lesson.id === lessonId ||
-                  lesson._id?.toString() === lessonId
-                ) {
-                  lesson.videoUrl = `/uploads/${file.filename}`;
-                }
-              });
-            });
-          }
-        }
-      });
+    if (isSavingDraft) {
+      updateData.status = "draft";
+    } else if (isPublishing) {
+      updateData.status = "published";
+      updateData.publishedAt = new Date();
     }
 
-    // Conditional Validation for Update
+    // ============================================
+    // FILE CLEANUP - Delete old files when replaced
+    // ============================================
+
+    // Clean up old files (safely)
+    if (req.files && req.files.length > 0) {
+      try {
+        const newThumbnailFile = req.files.find(
+          (f) => f.fieldname === "thumbnail",
+        );
+        if (newThumbnailFile && course.thumbnail) {
+          await deleteFile(course.thumbnail).catch((err) =>
+            console.error("Thumbnail cleanup failed:", err.message),
+          );
+          console.log(`Replaced thumbnail for course: ${course.title}`);
+        }
+
+        // Clean up old videos
+        for (const file of req.files) {
+          if (file.fieldname.startsWith("video-")) {
+            const lessonId = file.fieldname.replace("video-", "");
+            if (course.chapters) {
+              for (const chapter of course.chapters) {
+                if (chapter.lessons) {
+                  for (const lesson of chapter.lessons) {
+                    const lessonIdStr = lesson._id?.toString() || lesson.id;
+                    if (lessonIdStr === lessonId && lesson.videoUrl) {
+                      await deleteFile(lesson.videoUrl).catch((err) =>
+                        console.error("Video cleanup failed:", err.message),
+                      );
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (cleanupError) {
+        console.error("File cleanup error:", cleanupError);
+        // Continue update despite cleanup failure
+      }
+    }
+
+    // Handle uploaded files - with error suppression as requested
+    if (req.files && req.files.length > 0) {
+      try {
+        for (const file of req.files) {
+          if (file.fieldname === "thumbnail") {
+            try {
+              updateData.thumbnail = await uploadImage(file.buffer);
+            } catch (uploadError) {
+              console.error("Thumbnail upload failed:", uploadError.message);
+              // Continue without updating thumbnail
+            }
+          } else if (file.fieldname.startsWith("video-")) {
+            const lessonId = file.fieldname.replace("video-", "");
+            try {
+              const videoUrl = await uploadVideo(file.buffer);
+              if (updateData.chapters) {
+                updateData.chapters.forEach((chapter) => {
+                  if (chapter.lessons) {
+                    chapter.lessons.forEach((lesson) => {
+                      if (
+                        lesson.id === lessonId ||
+                        lesson._id?.toString() === lessonId
+                      ) {
+                        lesson.videoUrl = videoUrl;
+                      }
+                    });
+                  }
+                });
+              }
+            } catch (uploadError) {
+              console.error(
+                `Video upload failed for lesson ${lessonId}:`,
+                uploadError.message,
+              );
+              // Continue without updating video
+            }
+          }
+        }
+      } catch (filesError) {
+        console.error("File processing error:", filesError);
+        // Continue update without files
+      }
+    }
+
+    // ============================================
+    // VALIDATION
+    // ============================================
     const currentStatus = updateData.status || course.status;
     if (currentStatus === "published") {
-      const { title, description, category, subtitle, chapters } = {
+      const mergedData = {
         ...course.toObject(),
         ...updateData,
       };
 
-      if (!title || !description || !category || !subtitle) {
+      if (
+        !mergedData.title ||
+        !mergedData.description ||
+        !mergedData.category ||
+        !mergedData.subtitle
+      ) {
         return res.status(400).json({
           message:
             "Title, subtitle, description, and category are required for published courses.",
         });
       }
-      if (!chapters || chapters.length === 0) {
+      if (!mergedData.chapters || mergedData.chapters.length === 0) {
         return res.status(400).json({
           message: "At least one chapter is required to publish.",
         });
       }
+      // Check that each chapter has at least one lesson
+      for (const chapter of mergedData.chapters) {
+        if (!chapter.title) {
+          return res.status(400).json({
+            message: "All chapters must have a title to publish.",
+          });
+        }
+        if (!chapter.lessons || chapter.lessons.length === 0) {
+          return res.status(400).json({
+            message: `Chapter "${chapter.title || "Untitled"}" must have at least one lesson to publish.`,
+          });
+        }
+      }
     } else {
       // Draft update requirement
-      const { title } = {
+      const mergedData = {
         ...course.toObject(),
         ...updateData,
       };
-      if (!title) {
+      if (!mergedData.title) {
         return res.status(400).json({
           message: "Title is required to save a draft.",
         });
       }
     }
 
+    // Sanitize enum fields
+    if (updateData.level === "") updateData.level = undefined;
+    if (updateData.language === "") updateData.language = undefined;
+
     course = await Course.findByIdAndUpdate(id, updateData, {
       new: true,
       runValidators: true,
     });
 
-    res.status(200).json({ message: "Course updated successfully", course });
+    res.status(200).json({
+      message: isPublishing
+        ? "Course published successfully"
+        : "Draft saved successfully",
+      course,
+    });
   } catch (error) {
     console.error("UPDATE COURSE ERROR:", error);
+    if (error.name === "ValidationError") {
+      console.log("Validation Errors:", JSON.stringify(error.errors, null, 2));
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: Object.values(error.errors).map((err) => err.message),
+      });
+    }
     res
       .status(500)
       .json({ message: "Failed to update course", error: error.message });
+  }
+};
+
+/* =========================
+   Tutor: Unpublish Course
+========================= */
+export const unpublishCourse = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tutorId = req.user._id;
+
+    const course = await Course.findById(id);
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    if (course.tutor.toString() !== tutorId.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to unpublish this course" });
+    }
+
+    if (course.status === "draft") {
+      return res.status(400).json({ message: "Course is already a draft" });
+    }
+
+    course.status = "draft";
+    await course.save();
+
+    res.status(200).json({
+      message: "Course unpublished successfully. It is now a draft.",
+      course,
+    });
+  } catch (error) {
+    console.error("UNPUBLISH COURSE ERROR:", error);
+    res
+      .status(500)
+      .json({ message: "Failed to unpublish course", error: error.message });
+  }
+};
+
+/* =========================
+   Tutor: Delete Course
+========================= */
+export const deleteCourse = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tutorId = req.user._id;
+
+    const course = await Course.findById(id);
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    if (course.tutor.toString() !== tutorId.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to delete this course" });
+    }
+
+    // Clean up all associated files (thumbnail + videos)
+    await cleanupCourseFiles(course);
+
+    // Delete the course
+    await Course.findByIdAndDelete(id);
+
+    res.status(200).json({ message: "Course deleted successfully" });
+  } catch (error) {
+    console.error("DELETE COURSE ERROR:", error);
+    res
+      .status(500)
+      .json({ message: "Failed to delete course", error: error.message });
   }
 };
 
@@ -240,5 +482,58 @@ export const getCourseById = async (req, res) => {
   } catch (error) {
     console.error("GET COURSE BY ID ERROR:", error);
     res.status(500).json({ message: "Failed to fetch course details" });
+  }
+};
+
+/* =========================
+   Public: Get All Published Courses
+========================= */
+export const getPublishedCourses = async (req, res) => {
+  try {
+    const {
+      category,
+      level,
+      language,
+      search,
+      page = 1,
+      limit = 12,
+    } = req.query;
+
+    const query = { status: "published" };
+
+    // Apply filters
+    if (category) query.category = category;
+    if (level) query.level = level;
+    if (language) query.language = language;
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const [courses, total] = await Promise.all([
+      Course.find(query)
+        .populate("tutor", "name email")
+        .sort({ publishedAt: -1 })
+        .skip(skip)
+        .limit(Number(limit)),
+      Course.countDocuments(query),
+    ]);
+
+    res.status(200).json({
+      courses,
+      pagination: {
+        page: Number(page),
+        limit: Number(limit),
+        total,
+        pages: Math.ceil(total / Number(limit)),
+      },
+    });
+  } catch (error) {
+    console.error("GET PUBLISHED COURSES ERROR:", error);
+    res.status(500).json({ message: "Failed to fetch courses" });
   }
 };
