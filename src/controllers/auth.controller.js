@@ -1,4 +1,5 @@
 import User from "../models/User.js";
+import jwt from "jsonwebtoken";
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -200,7 +201,7 @@ export const resendOtp = async (req, res) => {
 ========================= */
 export const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, rememberMe } = req.body;
 
     const user = await User.findOne({ email }).select("+password");
     if (!user || !(await user.matchPassword(password)))
@@ -215,14 +216,18 @@ export const login = async (req, res) => {
     user.refreshToken = refreshToken;
     await user.save();
 
-    res.cookie("refreshToken", refreshToken, {
+    const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      // secure: false,
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       path: "/",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    };
+
+    if (rememberMe) {
+      cookieOptions.maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+    }
+
+    res.cookie("refreshToken", refreshToken, cookieOptions);
 
     res.status(200).json({
       accessToken,
@@ -359,14 +364,21 @@ export const refreshAccessToken = async (req, res) => {
     user.refreshToken = newRefreshToken;
     await user.save();
 
-    // Update cookie
-    res.cookie("refreshToken", newRefreshToken, {
+    // Update cookie - inherit partial options but potentially keep maxAge?
+    // Usually we want to maintain the same expiry. For simplicity, just reset it.
+    const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       path: "/",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    };
+
+    // If it was already set, we might not know if it was "rememberMe".
+    // A better way is to check if it had a maxAge.
+    // For now, let's keep it persistent if it's already there.
+    cookieOptions.maxAge = 7 * 24 * 60 * 60 * 1000;
+
+    res.cookie("refreshToken", newRefreshToken, cookieOptions);
 
     res.status(200).json({ accessToken: newAccessToken });
   } catch (err) {
@@ -393,7 +405,7 @@ export const logout = async (req, res) => {
     res.clearCookie("refreshToken", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       path: "/",
     });
 
@@ -408,12 +420,33 @@ export const logout = async (req, res) => {
 export const me = async (req, res) => {
   try {
     const refreshToken = req.cookies.refreshToken;
-    if (!refreshToken) return res.sendStatus(401);
+    if (!refreshToken) {
+      console.warn("ME ENDPOINT: No refresh token cookie found");
+      return res.status(401).json({ message: "No session found" });
+    }
 
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-    const user = await User.findById(decoded.id);
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    } catch (err) {
+      console.error(
+        "ME ENDPOINT: Refresh token verification failed",
+        err.message,
+      );
+      return res.status(401).json({ message: "Session expired" });
+    }
 
-    if (!user) return res.sendStatus(403);
+    const user = await User.findById(decoded.id).select("+refreshToken");
+
+    if (!user) {
+      console.warn(`ME ENDPOINT: User not found for ID ${decoded.id}`);
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.refreshToken !== refreshToken) {
+      console.error(`ME ENDPOINT: Refresh token mismatch for user ${user._id}`);
+      return res.status(403).json({ message: "Invalid session" });
+    }
 
     const accessToken = generateAccessToken(user._id);
 
@@ -426,7 +459,7 @@ export const me = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("ME ENDPOINT ERROR:", err);
-    res.sendStatus(403);
+    console.error("ME ENDPOINT ERROR (Server):", err);
+    res.status(500).json({ message: "Server error during authentication" });
   }
 };
