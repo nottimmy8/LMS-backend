@@ -12,14 +12,27 @@ import authRoutes from "./routes/auth.routes.js";
 import courseRoutes from "./routes/course.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import tutorRoutes from "./routes/tutor.routes.js";
+import enrollmentRoutes from "./routes/enrollment.routes.js";
 
 const app = express();
 
 app.use(cookieParser());
 
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  process.env.CLIENT_URL,
+];
+
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("CORS not allowed"));
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -40,6 +53,7 @@ app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/courses", courseRoutes);
 app.use("/api/v1/upload", uploadRoutes);
 app.use("/api/v1/tutor", tutorRoutes);
+app.use("/api/v1/enrollments", enrollmentRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: "Route not found" });
