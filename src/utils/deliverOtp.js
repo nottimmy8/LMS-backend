@@ -1,7 +1,11 @@
 import sendEmail from "./sendEmail.js";
 
 const deliverOtp = async ({ email, otp, purpose }) => {
-  if (process.env.OTP_DELIVERY === "console") {
+  const deliveryMethod = (process.env.OTP_DELIVERY || "console")
+    .trim()
+    .toLowerCase();
+
+  if (deliveryMethod === "console") {
     console.log(`\n===== OTP (${purpose}) =====`);
     console.log(`Email: ${email}`);
     console.log(`OTP: ${otp}`);
