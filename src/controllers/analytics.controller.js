@@ -104,7 +104,7 @@ export const getStudentAnalytics = async (req, res) => {
       completedCourses,
       totalLessonsCompleted,
       totalCertificates,
-      streak: 12, // Mock for now, would requiring a "DailyLog" model
+      streak: 0, // Mock for now, would requiring a "DailyLog" model
     });
   } catch (error) {
     res.status(500).json({
