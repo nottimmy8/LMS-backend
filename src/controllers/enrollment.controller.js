@@ -1,5 +1,7 @@
 import Enrollment from "../models/Enrollment.js";
 import Course from "../models/Course.js";
+import Progress from "../models/Progress.js";
+import Certificate from "../models/Certificate.js";
 import { createNotification } from "./notification.controller.js";
 
 /**
@@ -185,5 +187,176 @@ export const checkEnrollment = async (req, res) => {
   } catch (error) {
     console.error("CHECK ENROLLMENT ERROR:", error);
     res.status(500).json({ message: "Failed to check enrollment status" });
+  }
+};
+
+/**
+ * @desc    Get all enrolled courses for the current student
+ * @route   GET /api/enrollments/my-learning
+ * @access  Private (Student)
+ */
+export const getMyLearning = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const enrollments = await Enrollment.find({
+      student: userId,
+      paymentStatus: "completed",
+    }).populate({
+      path: "course",
+      select: "title subtitle thumbnail tutor chapters",
+      populate: {
+        path: "tutor",
+        select: "name",
+      },
+    });
+
+    // Get progress for each course
+    const courseIds = enrollments.map((e) => e.course._id);
+    const progressList = await Progress.find({
+      student: userId,
+      course: { $in: courseIds },
+    });
+
+    const myLearning = enrollments.map((enrollment) => {
+      const courseProgress = progressList.find(
+        (p) => p.course.toString() === enrollment.course._id.toString(),
+      );
+
+      // Calculate percentage
+      let totalLessons = 0;
+      enrollment.course.chapters?.forEach((chapter) => {
+        totalLessons += chapter.lessons?.length || 0;
+      });
+
+      const completedCount = courseProgress?.completedLessons?.length || 0;
+      const progressPercent =
+        totalLessons > 0
+          ? Math.round((completedCount / totalLessons) * 100)
+          : 0;
+
+      return {
+        ...enrollment.toObject(),
+        progressPercent,
+        completedLessons: courseProgress?.completedLessons || [],
+        lastAccessedLesson: courseProgress?.lastAccessedLesson || null,
+        totalLessons,
+      };
+    });
+
+    res.status(200).json(myLearning);
+  } catch (error) {
+    console.error("GET MY LEARNING ERROR:", error);
+    res.status(500).json({ message: "Failed to fetch enrolled courses" });
+  }
+};
+
+/**
+ * @desc    Update lesson progress
+ * @route   POST /api/enrollments/progress
+ * @access  Private (Student)
+ */
+export const updateProgress = async (req, res) => {
+  try {
+    const { courseId, lessonId, isCompleted, lastAccessedLesson } = req.body;
+    const userId = req.user._id;
+
+    if (!courseId) {
+      return res.status(400).json({ message: "Course ID is required" });
+    }
+
+    let progress = await Progress.findOne({
+      student: userId,
+      course: courseId,
+    });
+
+    if (!progress) {
+      progress = new Progress({
+        student: userId,
+        course: courseId,
+        completedLessons: [],
+      });
+    }
+
+    if (lastAccessedLesson) {
+      progress.lastAccessedLesson = lastAccessedLesson;
+    }
+
+    if (lessonId && isCompleted !== undefined) {
+      if (isCompleted) {
+        if (!progress.completedLessons.includes(lessonId)) {
+          progress.completedLessons.push(lessonId);
+        }
+      } else {
+        progress.completedLessons = progress.completedLessons.filter(
+          (id) => id !== lessonId,
+        );
+      }
+    }
+
+    // Check if course is newly completed
+    const course = await Course.findById(courseId);
+    let totalLessons = 0;
+    course?.chapters?.forEach((chapter) => {
+      totalLessons += chapter.lessons?.length || 0;
+    });
+
+    if (
+      totalLessons > 0 &&
+      progress.completedLessons.length === totalLessons &&
+      !progress.completedAt
+    ) {
+      progress.completedAt = new Date();
+
+      // Auto-generate certificate
+      const certificateId = `CERT-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+      await Certificate.create({
+        student: userId,
+        course: courseId,
+        certificateId,
+      });
+
+      await createNotification({
+        recipient: userId,
+        type: "performance",
+        title: "Course Completed! 🎉",
+        message: `Congratulations! You have successfully completed "${course.title}". Your certificate is now available.`,
+        data: { courseId, certificateId },
+      });
+    }
+
+    await progress.save();
+
+    res.status(200).json({
+      message: "Progress updated successfully",
+      progress,
+    });
+  } catch (error) {
+    console.error("UPDATE PROGRESS ERROR:", error);
+    res.status(500).json({ message: "Failed to update progress" });
+  }
+};
+
+/**
+ * @desc    Get progress for a specific course
+ * @route   GET /api/enrollments/progress/:courseId
+ * @access  Private (Student)
+ */
+export const getProgress = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const userId = req.user._id;
+
+    const progress = await Progress.findOne({
+      student: userId,
+      course: courseId,
+    });
+
+    res
+      .status(200)
+      .json(progress || { completedLessons: [], lastAccessedLesson: null });
+  } catch (error) {
+    console.error("GET PROGRESS ERROR:", error);
+    res.status(500).json({ message: "Failed to fetch progress" });
   }
 };
