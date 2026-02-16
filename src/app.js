@@ -23,7 +23,6 @@ app.use(cookieParser());
 
 const allowedOrigins = [
   "http://localhost:3000",
-  "http://localhost:3001",
   "https://lms-nashles.vercel.app",
   process.env.CLIENT_URL,
 ];
