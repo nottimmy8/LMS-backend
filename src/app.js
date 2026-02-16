@@ -30,17 +30,22 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
+      // Log the origin to help debugging in Render logs
+      console.log("Incoming request from origin:", origin);
+
       // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
 
       if (
         allowedOrigins.includes(origin) ||
-        origin.startsWith("http://localhost")
+        origin.startsWith("http://localhost") ||
+        origin.includes("vercel.app") // Be a bit more flexible during setup
       ) {
         callback(null, true);
       } else {
-        console.log("CORS blocked for origin:", origin);
-        callback(new Error("CORS not allowed"));
+        console.warn("CORS blocked for origin:", origin);
+        // Instead of callback(new Error), just return false to let CORS middleware handle it
+        callback(null, false);
       }
     },
     credentials: true,
