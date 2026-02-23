@@ -5,6 +5,8 @@ import {
   getTutorAnalytics,
   getMyCertificates,
   getStudentAnalytics,
+  getPopularCourseCategories,
+  getEarningsAnalytics,
 } from "../controllers/analytics.controller.js";
 
 const router = express.Router();
@@ -19,5 +21,19 @@ router.get("/student", authorizeRoles("student"), getStudentAnalytics);
 
 // Student Certificates (Keep in analytics for now as grouped in controller, but route logically)
 router.get("/certificates", authorizeRoles("student"), getMyCertificates);
+
+// Popular Categories
+router.get(
+  "/popular-categories",
+  authorizeRoles("tutor", "admin"),
+  getPopularCourseCategories,
+);
+
+// Earnings Chart Data
+router.get(
+  "/earnings-chart",
+  authorizeRoles("tutor", "admin"),
+  getEarningsAnalytics,
+);
 
 export default router;
