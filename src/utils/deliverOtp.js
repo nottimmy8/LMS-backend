@@ -13,8 +13,8 @@ const deliverOtp = async ({ email, otp, purpose }) => {
     return;
   }
 
-  // EMAIL MODE (future)
-  await sendEmail({
+  // EMAIL MODE - Run asynchronously without awaiting
+  sendEmail({
     to: email,
     subject: "Your OTP Code",
     html: `
@@ -22,6 +22,8 @@ const deliverOtp = async ({ email, otp, purpose }) => {
       <p>Your OTP is <b>${otp}</b></p>
       <p>This code expires in 10 minutes.</p>
     `,
+  }).catch((error) => {
+    console.error(`FAILED TO DELIVER OTP (${purpose}) to ${email}:`, error);
   });
 };
 

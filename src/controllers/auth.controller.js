@@ -36,7 +36,7 @@ export const register = async (req, res) => {
       isVerified: false,
     });
 
-    await deliverOtp({
+    deliverOtp({
       email,
       otp,
       purpose: "Email Verification",
@@ -181,7 +181,7 @@ export const resendOtp = async (req, res) => {
     await user.save();
 
     // Send email
-    await deliverOtp({
+    deliverOtp({
       email,
       otp,
       purpose: "Resent Verification OTP",
@@ -273,7 +273,7 @@ export const forgotPassword = async (req, res) => {
     user.resetOtpAttempts = 0;
     await user.save();
 
-    await deliverOtp({
+    deliverOtp({
       email: user.email,
       otp,
       purpose: "Password Reset",

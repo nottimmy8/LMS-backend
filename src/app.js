@@ -30,9 +30,6 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Log the origin to help debugging in Render logs
-      console.log("Incoming request from origin:", origin);
-
       // Allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
 
