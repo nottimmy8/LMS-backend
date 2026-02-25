@@ -14,17 +14,19 @@ const deliverOtp = async ({ email, otp, purpose }) => {
   }
 
   // EMAIL MODE - Run asynchronously without awaiting
-  sendEmail({
-    to: email,
-    subject: "Your OTP Code",
-    html: `
+  try {
+    await sendEmail({
+      to: email,
+      subject: "Your OTP Code",
+      html: `
       <h2>${purpose}</h2>
       <p>Your OTP is <b>${otp}</b></p>
       <p>This code expires in 10 minutes.</p>
     `,
-  }).catch((error) => {
+    });
+  } catch (error) {
     console.error(`FAILED TO DELIVER OTP (${purpose}) to ${email}:`, error);
-  });
+  }
 };
 
 export default deliverOtp;

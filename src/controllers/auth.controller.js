@@ -36,7 +36,7 @@ export const register = async (req, res) => {
       isVerified: false,
     });
 
-    deliverOtp({
+    await deliverOtp({
       email,
       otp,
       purpose: "Email Verification",
